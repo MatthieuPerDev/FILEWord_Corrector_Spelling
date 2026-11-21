@@ -1,0 +1,13 @@
+services:
+
+  api:                      # nom du service (choisi librement)
+    build: .                # Dockerfile de l'API = ici, à côté de ce fichier
+    ports:
+      - "8000:8000"         # port du PC : port du conteneur
+
+  front:                    # même niveau que api (2 espaces)
+    build: ./frontend       # Dockerfile de React = dans le sous-dossier frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api                 # lancer l'API avant React
