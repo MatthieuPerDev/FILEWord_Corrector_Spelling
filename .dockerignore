@@ -1,0 +1,6 @@
+frontend/
+.venv/
+venv/
+.idea/
+__pycache__/
+*.docx
