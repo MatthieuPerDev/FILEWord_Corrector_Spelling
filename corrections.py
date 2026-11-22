@@ -1,6 +1,7 @@
 import subprocess
 import json
 import sys
+import bisect
 from docx import Document
 from pathlib import Path  # bibliothèque pour retourner au chemin local du PC
 import language_tool_python
@@ -84,27 +85,10 @@ def main():
 
     tl = language_tool_python.LanguageTool('fr')  # créé UNE SEULE FOIS, avant la boucle
 
-    cmpt = 0              # compteur de mots
-    nb_corrections = 0    # compteur de corrections
+    cmpt, nb_corrections = corriger_document(document, data, ignores, tl)  # toute la correction
 
-    for paragraphe in document.paragraphs:
-        if not paragraphe.text.strip():   # paragraphe vide → on passe au suivant
-            continue
-        cmpt += len(paragraphe.text.split())
+    tl.close()  # on ferme l'outil
 
-        # Passe 1 : on cherche dans le fichier avec les fautes et les corrections
-        for faute, correction in data.items():
-            if appliquer_correction(paragraphe, faute, correction):
-                nb_corrections += 1
-
-        # Passe 2 : LanguageTool sur le texte déjà corrigé par la passe 1
-        _, corrections_lt = corriger_texte(paragraphe.text, tl, ignores)
-        for faute, correction, message in corrections_lt:
-            if appliquer_correction(paragraphe, faute, correction):
-                nb_corrections += 1
-                print(f"{faute} -> {correction} ({message})")
-
-    tl.close()   # on ferme l'outil
 
     print(cmpt)
     print("Nombre de corrections :", nb_corrections)
@@ -113,6 +97,45 @@ def main():
     document.save(chemin_corrige)
     subprocess.run(["cmd", "/c", "start", "winword", str(chemin_corrige)])  # ouvre le fichier avec Word
 
+def corriger_document(document, data, ignores, tl):
+    cmpt = 0            # compteur de mots
+    nb_corrections = 0  # compteur de corrections
 
+    # on garde seulement les paragraphes non vides
+    paragraphes = [p for p in document.paragraphs if p.text.strip()]
+
+    # Passe 1 : on cherche dans le fichier avec les fautes et les corrections
+    for paragraphe in paragraphes:
+        cmpt += len(paragraphe.text.split())
+        for faute, correction in data.items():
+            if appliquer_correction(paragraphe, faute, correction):
+                nb_corrections += 1
+
+    # Passe 2 : LanguageTool en UN SEUL appel pour tout le document
+    textes = [p.text for p in paragraphes]
+    texte_complet = "\n".join(textes)        # tous les paragraphes séparés par un retour à la ligne
+    matches = tl.check(texte_complet)        # ← une seule requête
+
+    # position de début de chaque paragraphe dans le texte complet
+    debuts = []
+    position = 0
+    for texte in textes:
+        debuts.append(position)
+        position += len(texte) + 1           # +1 pour le "\n"
+
+    for match in matches:
+        faute = texte_complet[match.offset : match.offset + match.error_length]
+        if faute in ignores or not match.replacements:   # nom propre ou pas de suggestion
+            continue
+
+        # dans quel paragraphe se trouve cette faute ?
+        i = bisect.bisect_right(debuts, match.offset) - 1
+        correction = match.replacements[0]
+
+        if appliquer_correction(paragraphes[i], faute, correction):
+            nb_corrections += 1
+            print(f"{faute} -> {correction} ({match.message})")
+
+    return cmpt, nb_corrections
 if __name__ == "__main__":
     main()
