@@ -1,106 +1,82 @@
-"""
-Génère automatiquement une liste de fautes d'orthographe courantes en français.
-
-Principe :
-1. On prend les mots français les plus fréquents (wordfreq).
-2. On fabrique des fautes typiques : accent oublié, mauvais accent,
-   consonne double oubliée, consonne doublée à tort.
-3. On ne garde une faute QUE si elle n'existe dans aucun dictionnaire
-   (français ni anglais) et si elle ne peut venir que d'un seul mot.
-   → une telle faute est TOUJOURS fausse, quel que soit le contexte.
-"""
+# ce fichier permet d'utiliser l'api fastapi
+import io
 import json
-import sys
-from collections import defaultdict
-from wordfreq import top_n_list, zipf_frequency
-from spellchecker import SpellChecker
+import os
+import language_tool_python
+from docx import Document
+from fastapi import FastAPI, UploadFile, HTTPException
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from corrections import corriger_document
 
-NB_MOTS_SOURCE = int(sys.argv[1]) if len(sys.argv) > 1 else 20000
-NB_FAUTES_MAX = int(sys.argv[2]) if len(sys.argv) > 2 else 2000
+TAILLE_MAX = 5 * 1024 * 1024
 
-fr = SpellChecker(language="fr")
-en = SpellChecker(language="en")
+with open("fautes_orthographes/errors.json", "r", encoding="utf-8") as f:
+    data = json.load(f)
 
-# pas de î ni de û : depuis la réforme de 1990, "connait", "maitre", "surement" sont corrects
-ACCENTS = {"é": "e", "è": "e", "ê": "e", "à": "a", "â": "a",
-           "ô": "o", "ù": "u", "ç": "c"}
-ECART_MIN = 1.0   # la faute doit être au moins 10 fois plus rare que le bon mot
-# pas de é -> è : depuis 1990, "évènement" et "règlementation" sont corrects
-ECHANGES = {"é": ["ê"], "è": ["é"], "ê": ["é", "è"]}
-DOUBLES = ["mm", "nn", "ll", "tt", "ss", "rr", "pp", "ff", "cc"]
-VOYELLES = set("aeiouyéèêàâîôû")
+with open("fautes_orthographes/ignorer.json", "r", encoding="utf-8") as f:
+    ignores = set(json.load(f))
+
+tl = None
 
 
-# formes rectifiées de 1990 (sans î ni û) : elles sont correctes aussi
-RECTIFIEES = {m.replace("î", "i").replace("û", "u") for m in fr.word_frequency.dictionary}
+def get_outil():
+    global tl
+    if tl is None:
+        if os.getenv("LT_MODE") == "public":
+            tl = language_tool_python.LanguageToolPublicAPI("fr")
+        else:
+            tl = language_tool_python.LanguageTool("fr")
+    return tl
 
 
-def est_un_vrai_mot(mot):
-    return mot in fr or mot in en or mot in RECTIFIEES
+app = FastAPI()
+origins = ["*"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,              # QUI a le droit d'appeler l'API
+    allow_methods=["*"],                # avec quelles méthodes (GET, POST…)
+    allow_headers=["*"],                # avec quels en-têtes
+    expose_headers=["X-Correction"],
+)
 
 
-def variantes(mot):
-    """Toutes les fautes typiques qu'on peut faire sur ce mot."""
-    resultats = set()
-    for i, lettre in enumerate(mot):
-        # accent oublié : déjà -> deja (une lettre à la fois)
-        if lettre in ACCENTS:
-            resultats.add(mot[:i] + ACCENTS[lettre] + mot[i + 1:])
-        # mauvais accent : succès -> succés
-        for autre in ECHANGES.get(lettre, []):
-            resultats.add(mot[:i] + autre + mot[i + 1:])
-    # consonne double oubliée : développement -> dévelopement
-    for double in DOUBLES:
-        debut = mot.find(double)
-        while debut != -1:
-            resultats.add(mot[:debut] + mot[debut + 1:])
-            debut = mot.find(double, debut + 1)
-    # consonne doublée à tort entre deux voyelles : appeler <- apeller
-    for i in range(1, len(mot) - 1):
-        c = mot[i]
-        if c in "mnltrpf" and mot[i - 1] in VOYELLES and mot[i + 1] in VOYELLES:
-            resultats.add(mot[:i] + c + mot[i:])
-    resultats.discard(mot)
-    return resultats
+@app.get("/")
+def read_root():
+    return {"message": "Le correcteur fonctionne"}
 
 
-# 1. les mots sources : fréquents, valides, assez longs, seulement des lettres
-mots = [m for m in top_n_list("fr", NB_MOTS_SOURCE)
-        if len(m) >= 5 and m.isalpha() and m in fr]
+@app.post("/corriger")
+async def creer_fichier(file: UploadFile):
+    octets = await file.read()
 
-# 2. on fabrique les fautes des mots sources
-fautes_sources = {}
-for mot in mots:
-    for faute in variantes(mot):
-        if not est_un_vrai_mot(faute):
-            fautes_sources.setdefault(faute, set()).add(mot)
+    if len(octets) > TAILLE_MAX:
+        raise HTTPException(status_code=413, detail="Fichier trop volumineux (5 Mo max)")
 
-# 3. ambiguïté vérifiée sur TOUT le dictionnaire : une faute qui peut venir
-#    de deux mots différents (jete : jeté ou jette ?) est écartée
-origines = defaultdict(set)
-for mot in fr.word_frequency.dictionary:
-    if mot.isalpha():
-        for faute in variantes(mot):
-            if faute in fautes_sources:
-                origines[faute].add(mot)
+    try:
+        document = Document(io.BytesIO(octets))  # ouvre contenu doc
+    except Exception:
+        raise HTTPException(status_code=400, detail="Ce fichier n'est pas un document Word valide")
 
-candidats = [(faute, next(iter(src))) for faute, src in fautes_sources.items()
-             if len(src) == 1 and len(origines[faute]) == 1]
+    statut = "complete"
+    try:
+        corriger_document(document, data, ignores, get_outil())
+    except Exception as e:
+        print("LANGUAGETOOL INDISPONIBLE :", e)
+        document = Document(io.BytesIO(octets))
+        corriger_document(document, data, ignores, None)
+        statut = "partielle"
 
-# 3 bis. on écarte les "fautes" presque aussi fréquentes que le bon mot :
-#        ce sont souvent de vrais mots absents du dictionnaire, ou des noms propres
-#        (baise / baisse, gaulle / gaule, benoit / benoît)
-candidats = [(f, c) for f, c in candidats
-             if zipf_frequency(c, "fr") - zipf_frequency(f, "fr") >= ECART_MIN]
-
-# 4. on classe : d'abord les mots les plus fréquents, et les fautes qu'on voit réellement
-#    sur le web (wordfreq connaît aussi les fautes fréquentes)
-candidats.sort(key=lambda fc: (zipf_frequency(fc[0], "fr"), zipf_frequency(fc[1], "fr")), reverse=True)
-
-resultat = dict(candidats[:NB_FAUTES_MAX])
-json.dump(resultat, open("fautes_generees.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-
-print("mots sources :", len(mots))
-print("fautes candidates (non ambiguës) :", len(candidats))
-print("fautes gardées :", len(resultat))
-print("exemples :", list(resultat.items())[:40])
+    sortie = io.BytesIO()
+    document.save(sortie)
+    sortie.seek(0)
+    nom = file.filename.replace(".docx", "_corrige.docx")
+    return StreamingResponse(  # 7. renvoyer le fichier
+        sortie,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f'attachment; filename="{nom}"',
+            "X-Correction": statut,
+        },
+    )
