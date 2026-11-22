@@ -7,6 +7,12 @@ from docx import Document
 from pathlib import Path  # bibliothèque pour retourner au chemin local du PC
 import language_tool_python
 
+try:
+    with open("fautes_orthographes/fautes_generees.json", "r", encoding="utf-8") as f:
+        FAUTES_GENEREES = json.load(f)
+except FileNotFoundError:
+    FAUTES_GENEREES = {}
+
 """
 Cette fonction permet de corriger un texte avec l'outil LanguageTool,
 sans toucher aux mots de la liste ignores (noms propres, termes techniques)
@@ -50,9 +56,10 @@ def avec_majuscules(data):
 def appliquer_correction(paragraphe, faute, correction):
     """Remplace `faute` par `correction` dans un paragraphe Word en gardant la mise en forme.
     Renvoie True si la correction a été appliquée, False sinon."""
-    motif = motif_mot_entier(faute)
-
     # Sortie anticipée : la faute n'est pas dans ce paragraphe
+    if faute not in paragraphe.text:
+        return False
+    motif = motif_mot_entier(faute)
     if not motif.search(paragraphe.text):
         return False
 
@@ -115,15 +122,19 @@ def corriger_document(document, data, ignores, tl):
     cmpt = 0  # compteur de mots
     nb_corrections = 0  # compteur de corrections
 
-    data = avec_majuscules(data)
+    data = {**FAUTES_GENEREES, **avec_majuscules(data)}
     paragraphes = [p for p in document.paragraphs if p.text.strip()]  # paragraphe vide → on passe au suivant
 
     # Passe 1 : on cherche dans le fichier avec les fautes et les corrections
     for paragraphe in paragraphes:
-        cmpt += len(paragraphe.text.split())
+        texte = paragraphe.text
+        cmpt += len(texte.split())
         for faute, correction in data.items():
+            if faute in ignores or faute not in texte:
+                continue
             if appliquer_correction(paragraphe, faute, correction):
                 nb_corrections += 1
+                texte = paragraphe.text
 
     if tl is None:
         return cmpt, nb_corrections
