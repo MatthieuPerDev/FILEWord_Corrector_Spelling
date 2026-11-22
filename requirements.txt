@@ -2,4 +2,4 @@ fastapi
 python-docx
 language_tool_python
 python-multipart
-uvicorn
+uvicornwordfreq

@@ -6,6 +6,8 @@ import re
 from docx import Document
 from pathlib import Path  # bibliothèque pour retourner au chemin local du PC
 import language_tool_python
+import unicodedata
+from wordfreq import zipf_frequency
 
 try:
     with open("fautes_orthographes/fautes_generees.json", "r", encoding="utf-8") as f:
@@ -39,6 +41,49 @@ def corriger_texte(texte, outil, mots_ignores):
 
     corrections.reverse()   # remettre les corrections dans l'ordre de lecture
     return texte, corrections
+
+
+
+def distance(a, b):
+    """Nombre de lettres à ajouter, enlever ou changer pour passer de a à b (distance de Levenshtein)."""
+    precedente = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        actuelle = [i]
+        for j, cb in enumerate(b, 1):
+            actuelle.append(min(precedente[j] + 1,                 # enlever
+                                actuelle[j - 1] + 1,               # ajouter
+                                precedente[j - 1] + (ca != cb)))   # changer
+        precedente = actuelle
+    return precedente[-1]
+
+
+def phonetique(mot):
+    """Transforme un mot en une 'clé de son' : simpatik et sympathique donnent la même clé."""
+    mot = unicodedata.normalize("NFD", mot.lower())
+    mot = "".join(c for c in mot if unicodedata.category(c) != "Mn")   # enlève les accents
+    mot = re.sub(r"[^a-z]", "", mot)
+    for avant, apres in [("eau", "o"), ("au", "o"), ("ph", "f"), ("th", "t"), ("qu", "k"),
+                         ("c(?=[eiy])", "s"), ("g(?=[eiy])", "j"), ("c", "k"), ("y", "i"),
+                         ("ai", "e"), ("ei", "e"), ("e?[ae]n(?=[^aeiou]|$)", "an"), ("z", "s")]:
+        mot = re.sub(avant, apres, mot)
+    mot = re.sub(r"(.)\1", r"\1", mot)        # lettres doublées → une seule
+    mot = re.sub(r"[estxd]+$", "", mot)       # lettres muettes à la fin
+    return mot
+
+
+def choisir_suggestion(faute, suggestions):
+    """Choisit la meilleure suggestion de LanguageTool, ou None si aucune n'est assez proche."""
+    meilleure, meilleur_score = None, None
+    for suggestion in suggestions[:5]:                         # les 5 premières suffisent
+        # on compare sans apostrophes ni tirets : aujoudui est proche de aujourd'hui
+        d = distance(re.sub(r"['’-]", "", faute.lower()), re.sub(r"['’-]", "", suggestion.lower()))
+        meme_son = phonetique(faute) == phonetique(suggestion) and phonetique(faute) != ""
+        if d > max(2, len(faute) // 4) and not meme_son:     # trop éloignée → on ne la prend pas
+            continue
+        score = zipf_frequency(suggestion, "fr") - d + (3 if meme_son else 0)
+        if meilleur_score is None or score > meilleur_score:
+            meilleure, meilleur_score = suggestion, score
+    return meilleure
 
 
 def motif_mot_entier(faute):
@@ -139,28 +184,37 @@ def corriger_document(document, data, ignores, tl):
     if tl is None:
         return cmpt, nb_corrections
 
-    # Passe 2 : LanguageTool sur le texte déjà corrigé par la passe 1
-    textes = [p.text for p in paragraphes]
-    texte_complet = "\n".join(textes)
-    matches = tl.check(texte_complet)
+    # Passe 2 : LanguageTool, 2 tours : certaines fautes n'apparaissent qu'une fois les premières corrigées
+    for tour in range(2):
+        textes = [p.text for p in paragraphes]
+        texte_complet = "\n".join(textes)
+        matches = tl.check(texte_complet)
 
-    debuts = []
-    position = 0
-    for texte in textes:
-        debuts.append(position)
-        position += len(texte) + 1
+        debuts = []
+        position = 0
+        for texte in textes:
+            debuts.append(position)
+            position += len(texte) + 1
 
-    for match in matches:
-        faute = texte_complet[match.offset : match.offset + match.error_length]
-        if faute in ignores or not match.replacements:
-            continue
+        corrige_ce_tour = 0
+        for match in matches:
+            faute = texte_complet[match.offset : match.offset + match.error_length]
+            if faute in ignores or not match.replacements:
+                continue
 
-        i = bisect.bisect_right(debuts, match.offset) - 1
-        correction = match.replacements[0]
+            correction = choisir_suggestion(faute, match.replacements)
+            if correction is None:      # aucune suggestion assez proche → mieux vaut laisser la faute
+                print(f"{faute} : laissé tel quel ({match.replacements[:3]})")
+                continue
 
-        if appliquer_correction(paragraphes[i], faute, correction):
-            nb_corrections += 1
-            print(f"{faute} -> {correction} ({match.message})")
+            i = bisect.bisect_right(debuts, match.offset) - 1
+            if appliquer_correction(paragraphes[i], faute, correction):
+                nb_corrections += 1
+                corrige_ce_tour += 1
+                print(f"{faute} -> {correction} ({match.message})")
+
+        if corrige_ce_tour == 0:        # rien de nouveau → pas besoin d'un 2e tour
+            break
 
     return cmpt, nb_corrections
 

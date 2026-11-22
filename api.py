@@ -8,6 +8,7 @@ from fastapi import FastAPI, UploadFile, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from corrections import corriger_document
+from ia import corriger_avec_ia
 
 TAILLE_MAX = 5 * 1024 * 1024
 
@@ -59,14 +60,22 @@ async def creer_fichier(file: UploadFile):
     except Exception:
         raise HTTPException(status_code=400, detail="Ce fichier n'est pas un document Word valide")
 
-    statut = "complete"
+    # 1er choix : l'IA (corrige même les fautes écrites au son)
+    statut = "ia"
     try:
-        corriger_document(document, data, ignores, get_outil())
+        corriger_avec_ia(document, ignores)
     except Exception as e:
-        print("LANGUAGETOOL INDISPONIBLE :", e)
-        document = Document(io.BytesIO(octets))
-        corriger_document(document, data, ignores, None)
-        statut = "partielle"
+        print("IA INDISPONIBLE :", e)
+        document = Document(io.BytesIO(octets))      # on repart du fichier d'origine
+        # plan B : dictionnaire + LanguageTool
+        statut = "complete"
+        try:
+            corriger_document(document, data, ignores, get_outil())
+        except Exception as e:
+            print("LANGUAGETOOL INDISPONIBLE :", e)
+            document = Document(io.BytesIO(octets))
+            corriger_document(document, data, ignores, None)
+            statut = "partielle"
 
     sortie = io.BytesIO()
     document.save(sortie)
