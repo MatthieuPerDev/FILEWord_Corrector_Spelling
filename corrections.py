@@ -2,6 +2,7 @@ import subprocess
 import json
 import sys
 import bisect
+import re
 from docx import Document
 from pathlib import Path  # bibliothèque pour retourner au chemin local du PC
 import language_tool_python
@@ -34,24 +35,37 @@ def corriger_texte(texte, outil, mots_ignores):
     return texte, corrections
 
 
+def motif_mot_entier(faute):
+    return re.compile(r"(?<!\w)" + re.escape(faute) + r"(?!\w)")
+
+
+def avec_majuscules(data):
+    complet = dict(data)
+    for faute, correction in data.items():
+        if faute[:1].islower():
+            complet.setdefault(faute[0].upper() + faute[1:], correction[0].upper() + correction[1:])
+    return complet
+
+
 def appliquer_correction(paragraphe, faute, correction):
     """Remplace `faute` par `correction` dans un paragraphe Word en gardant la mise en forme.
     Renvoie True si la correction a été appliquée, False sinon."""
+    motif = motif_mot_entier(faute)
 
     # Sortie anticipée : la faute n'est pas dans ce paragraphe
-    if faute not in paragraphe.text:
+    if not motif.search(paragraphe.text):
         return False
 
     # Étape 1 : correction run par run (garde le style de chaque morceau)
     corrige = False
     for run in paragraphe.runs:  # chaque morceau du paragraphe
-        if faute in run.text:
-            run.text = run.text.replace(faute, correction)
+        if motif.search(run.text):
+            run.text = motif.sub(lambda m: correction, run.text)
             corrige = True
 
     # Étape 2 : la faute est coupée entre plusieurs runs
     if not corrige:
-        nouveau_texte = paragraphe.text.replace(faute, correction)
+        nouveau_texte = motif.sub(lambda m: correction, paragraphe.text)
         runs_texte = [run for run in paragraphe.runs if run.text]  # runs avec du texte (pas les images)
         runs_texte[0].text = nouveau_texte                         # tout le texte corrigé dans le 1er run
         for run in runs_texte[1:]:
@@ -101,6 +115,7 @@ def corriger_document(document, data, ignores, tl):
     cmpt = 0  # compteur de mots
     nb_corrections = 0  # compteur de corrections
 
+    data = avec_majuscules(data)
     paragraphes = [p for p in document.paragraphs if p.text.strip()]  # paragraphe vide → on passe au suivant
 
     # Passe 1 : on cherche dans le fichier avec les fautes et les corrections
