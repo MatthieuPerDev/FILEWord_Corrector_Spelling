@@ -17,10 +17,18 @@ with open("fautes_orthographes/errors.json", "r", encoding="utf-8") as f:
 with open("fautes_orthographes/ignorer.json", "r", encoding="utf-8") as f:
     ignores = set(json.load(f))
 # LT_MODE=public sur Render (peu de RAM) ; en local : LanguageTool complet avec Java
-if os.getenv("LT_MODE") == "public":
-    tl = language_tool_python.LanguageToolPublicAPI("fr")
-else:
-    tl = language_tool_python.LanguageTool("fr")
+# LanguageTool est créé au premier besoin (pas au démarrage),
+# pour que l'API démarre même si l'API publique est saturée
+tl = None
+
+def get_outil():
+    global tl
+    if tl is None:
+        if os.getenv("LT_MODE") == "public":
+            tl = language_tool_python.LanguageToolPublicAPI("fr")
+        else:
+            tl = language_tool_python.LanguageTool("fr")
+    return tl
 app = FastAPI()
 
 # adresses autorisées : localhost par défaut, l'adresse Render en ligne
@@ -50,7 +58,7 @@ async def creer_fichier(file: UploadFile):
         raise HTTPException(status_code=400, detail="Ce fichier n'est pas un document Word valide")
 
     try:
-        corriger_document(document, data, ignores, tl)
+        corriger_document(document, data, ignores, get_outil())
     except Exception as e:
         print("ERREUR CORRECTION :", e)  # visible dans le terminal de l'API
         raise HTTPException(status_code=502, detail=f"Le service de correction ne répond pas : {e}")
