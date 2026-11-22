@@ -89,7 +89,6 @@ def main():
 
     tl.close()  # on ferme l'outil
 
-
     print(cmpt)
     print("Nombre de corrections :", nb_corrections)
 
@@ -97,12 +96,12 @@ def main():
     document.save(chemin_corrige)
     subprocess.run(["cmd", "/c", "start", "winword", str(chemin_corrige)])  # ouvre le fichier avec Word
 
+
 def corriger_document(document, data, ignores, tl):
-    cmpt = 0            # compteur de mots
+    cmpt = 0  # compteur de mots
     nb_corrections = 0  # compteur de corrections
 
-    # on garde seulement les paragraphes non vides
-    paragraphes = [p for p in document.paragraphs if p.text.strip()]
+    paragraphes = [p for p in document.paragraphs if p.text.strip()]  # paragraphe vide → on passe au suivant
 
     # Passe 1 : on cherche dans le fichier avec les fautes et les corrections
     for paragraphe in paragraphes:
@@ -111,24 +110,25 @@ def corriger_document(document, data, ignores, tl):
             if appliquer_correction(paragraphe, faute, correction):
                 nb_corrections += 1
 
-    # Passe 2 : LanguageTool en UN SEUL appel pour tout le document
-    textes = [p.text for p in paragraphes]
-    texte_complet = "\n".join(textes)        # tous les paragraphes séparés par un retour à la ligne
-    matches = tl.check(texte_complet)        # ← une seule requête
+    if tl is None:
+        return cmpt, nb_corrections
 
-    # position de début de chaque paragraphe dans le texte complet
+    # Passe 2 : LanguageTool sur le texte déjà corrigé par la passe 1
+    textes = [p.text for p in paragraphes]
+    texte_complet = "\n".join(textes)
+    matches = tl.check(texte_complet)
+
     debuts = []
     position = 0
     for texte in textes:
         debuts.append(position)
-        position += len(texte) + 1           # +1 pour le "\n"
+        position += len(texte) + 1
 
     for match in matches:
         faute = texte_complet[match.offset : match.offset + match.error_length]
-        if faute in ignores or not match.replacements:   # nom propre ou pas de suggestion
+        if faute in ignores or not match.replacements:
             continue
 
-        # dans quel paragraphe se trouve cette faute ?
         i = bisect.bisect_right(debuts, match.offset) - 1
         correction = match.replacements[0]
 
@@ -137,5 +137,7 @@ def corriger_document(document, data, ignores, tl):
             print(f"{faute} -> {correction} ({match.message})")
 
     return cmpt, nb_corrections
+
+
 if __name__ == "__main__":
     main()
