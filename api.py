@@ -32,8 +32,7 @@ def get_outil():
 app = FastAPI()
 
 # adresses autorisées : localhost par défaut, l'adresse Render en ligne
-origins = os.getenv("FRONTEND_URL", "http://localhost:5173").split(",")   # ←
-
+origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,              # QUI a le droit d'appeler l'API
