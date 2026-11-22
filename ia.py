@@ -24,7 +24,7 @@ Réponds uniquement en JSON : {{"paragraphes": ["...", "..."]}}, même nombre d'
 
 def appeler_ia(paragraphes, ignores):
     """Envoie une liste de paragraphes à l'IA et renvoie la liste corrigée."""
-    cle = os.getenv("IA_CLE")
+    cle = os.getenv("IA_CLE", "").strip()  # enlève les espaces copiés par erreur
     if not cle:
         raise RuntimeError("pas de clé IA_CLE")   # pas de clé → on passe au plan B
 
