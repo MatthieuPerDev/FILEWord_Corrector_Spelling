@@ -1,5 +1,6 @@
 # ce fichier permet d'utiliser l'api fastapi
 import io
+import threading
 from docx import Document
 from fastapi import FastAPI, UploadFile, HTTPException
 from fastapi.responses import StreamingResponse
@@ -14,14 +15,17 @@ ignores = set(charger_json("ignorer.json", []))
 
 tl = None
 tl_essaye = False
+verrou = threading.Lock()
 
 
 def get_outil():
-    """LanguageTool démarré une seule fois ; None s'il est indisponible (-> dictionnaires seuls)."""
+    """LanguageTool démarré une seule fois ; None s'il est indisponible (-> dictionnaires seuls).
+    Si le démarrage est en cours, on attend qu'il finisse."""
     global tl, tl_essaye
-    if not tl_essaye:
-        tl_essaye = True
-        tl = demarrer_languagetool()
+    with verrou:
+        if not tl_essaye:
+            tl = demarrer_languagetool()
+            tl_essaye = True
     return tl
 
 
@@ -37,14 +41,21 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+def demarrer_en_avance():
+    # Java met du temps à démarrer sur un petit serveur : on le lance dès le démarrage,
+    # en arrière-plan, pour que la 1re correction n'attende pas
+    threading.Thread(target=get_outil, daemon=True).start()
+
+
 @app.get("/")
 def read_root():
     return {"message": "Le correcteur fonctionne"}
 
 
 @app.post("/corriger")
-async def creer_fichier(file: UploadFile):
-    octets = await file.read()
+def creer_fichier(file: UploadFile):
+    octets = file.file.read()
 
     if len(octets) > TAILLE_MAX:
         raise HTTPException(status_code=413, detail="Fichier trop volumineux (5 Mo max)")

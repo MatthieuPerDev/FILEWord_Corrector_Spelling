@@ -6,6 +6,9 @@ RUN apt-get update && apt-get install -y default-jre-headless && rm -rf /var/lib
 
 WORKDIR /app
 
+# Mémoire de Java limitée pour tenir dans les 512 Mo de Render gratuit (Java ~320 Mo + API ~60 Mo)
+ENV JAVA_TOOL_OPTIONS="-Xms32m -Xmx224m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Xss512k -XX:MaxMetaspaceSize=96m -XX:ReservedCodeCacheSize=32m"
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

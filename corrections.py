@@ -208,6 +208,18 @@ def choisir_suggestion(faute, suggestions):
     return meilleure
 
 
+def creer_local(language_tool_python):
+    """LanguageTool local (Java). La bibliothèque n'attend que 15 s que Java démarre :
+    sur un petit serveur (Render gratuit) c'est trop court, on attend jusqu'à LT_ATTENTE secondes."""
+    attente = int(os.getenv("LT_ATTENTE", "300"))
+
+    class LanguageToolPatient(language_tool_python.LanguageTool):
+        def _wait_for_server_ready(self, timeout=15):
+            return super()._wait_for_server_ready(timeout=max(timeout, attente))
+
+    return LanguageToolPatient("fr")
+
+
 def get_outil(mode=None):
     """Démarre LanguageTool. Renvoie None s'il est indisponible (pas installé, pas de Java...)."""
     mode = mode or os.getenv("LT_MODE", "local")
@@ -220,7 +232,7 @@ def get_outil(mode=None):
     for essai in essais:
         try:
             if essai == "local":
-                outil = language_tool_python.LanguageTool("fr")
+                outil = creer_local(language_tool_python)
             else:
                 outil = language_tool_python.LanguageToolPublicAPI("fr")
             outil.check("Test.")                     # vérifie qu'il répond vraiment
