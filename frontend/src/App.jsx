@@ -7,14 +7,15 @@ const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000"
 import {renderAsync} from "docx-preview"
 export default function App() {
     const [fichier, setFichier] = useState(null);// permet de mémo une donnée
-       const [fichierCorrige, setFichierCorrige] = useState(null)
+    const [fichierCorrige, setFichierCorrige] = useState(null)
     const [enCours, setenCours] = useState(false)
     const [erreur, seterreur] = useState(null)
+    const [resultat, setResultat] = useState(null)   // nombre de corrections + mode utilisé
 
-     const apercuAvant = useRef(null)    // la <div> où on dessine l'original
+    const apercuAvant = useRef(null)    // la <div> où on dessine l'original
     const apercuApres = useRef(null)    // la <div> où on dessine le corrigé
 
-       useEffect(() => {
+    useEffect(() => {
         if (fichier && apercuAvant.current) {
             renderAsync(fichier, apercuAvant.current, null, { ignoreWidth: true })
         }
@@ -23,14 +24,15 @@ export default function App() {
     // quand le fichier corrigé arrive, on dessine l'aperçu "après"
     useEffect(() => {
         if (fichierCorrige && apercuApres.current) {
-          renderAsync(fichierCorrige, apercuApres.current, null, { ignoreWidth: true })
+            renderAsync(fichierCorrige, apercuApres.current, null, { ignoreWidth: true })
         }
     }, [fichierCorrige])
 
-        function modifieretat(event) {
+    function modifieretat(event) {
         const fichier_select = event.target.files[0] // on recup le fichier
         setFichier(fichier_select)
         setFichierCorrige(null)    // ← on efface l'ancien résultat
+        setResultat(null)
         /*
             console.log(fichier_select)
     }
@@ -40,6 +42,7 @@ export default function App() {
         const formData = new FormData()
         formData.append("file", fichier)
         seterreur(null)
+        setResultat(null)
         setenCours(true)
 
         try {
@@ -47,10 +50,14 @@ export default function App() {
                 method: "POST",
                 body: formData,
             })
-               if (!response.ok) {
+            if (!response.ok) {
                 const data = await response.json()     // l'API renvoie {"detail": "..."}
                 throw new Error(data.detail)
             }
+            setResultat({
+                statut: response.headers.get("X-Correction"),
+                nb: response.headers.get("X-Nb-Corrections"),
+            })
             const blob = await response.blob()
             setFichierCorrige(blob)
 
@@ -78,7 +85,7 @@ export default function App() {
     return (
 
 
-               <div className="min-h-screen bg-emerald-100 flex flex-col items-center justify-center gap-6 p-8">
+        <div className="min-h-screen bg-emerald-100 flex flex-col items-center justify-center gap-6 p-8">
             <div className="bg-white rounded-xl shadow-lg p-8 max-w-md w-full flex flex-col gap-4">
 
                 <h1 className="text-3xl font-bold text-blue-600 text-center">Correcteur de documents Word (en
@@ -106,9 +113,18 @@ export default function App() {
 
                 {enCours && <p className="text-center text-blue-600">Correction en cours ...</p>}
                 {erreur && <p className="text-center text-red-600">Erreur : {erreur}</p>}
- </div>
+                {resultat && (
+                    <p className={`text-center ${resultat.statut === "partielle" ? "text-orange-600" : "text-green-700"}`}>
+                        {resultat.nb ?? "?"} correction(s) — {{
+                        ia: "par l'IA",
+                        complete: "dictionnaires + LanguageTool",
+                        partielle: "dictionnaires seulement (LanguageTool indisponible sur le serveur)",
+                    }[resultat.statut] ?? resultat.statut}
+                    </p>
+                )}
+            </div>
 
-             {fichier && (
+            {fichier && (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 w-full max-w-7xl">
 
                     <div className="bg-white rounded-xl shadow-lg p-4">

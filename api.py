@@ -4,7 +4,7 @@ from docx import Document
 from fastapi import FastAPI, UploadFile, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from corrections import corriger_document, charger_json, get_outil as demarrer_languagetool
+from corrections import corriger_document, charger_json, est_public, outil_public, get_outil as demarrer_languagetool
 from ia import corriger_avec_ia
 
 TAILLE_MAX = 5 * 1024 * 1024
@@ -33,7 +33,7 @@ app.add_middleware(
     allow_origins=origins,              # QUI a le droit d'appeler l'API
     allow_methods=["*"],                # avec quelles méthodes (GET, POST…)
     allow_headers=["*"],                # avec quels en-têtes
-    expose_headers=["X-Correction"],
+    expose_headers=["X-Correction", "X-Nb-Corrections"],
 )
 
 
@@ -55,16 +55,20 @@ async def creer_fichier(file: UploadFile):
         raise HTTPException(status_code=400, detail="Ce fichier n'est pas un document Word valide")
 
     # 1er choix : l'IA (corrige même les fautes écrites au son)
+    global tl
     statut = "ia"
     try:
-        corriger_avec_ia(document, ignores)
+        nb = corriger_avec_ia(document, ignores)
     except Exception as e:
         print("IA INDISPONIBLE :", e)
         document = Document(io.BytesIO(octets))      # on repart du fichier d'origine
         # plan B : dictionnaire + LanguageTool
-        outil = get_outil()
-        statut = "complete" if outil is not None else "partielle"
-        corriger_document(document, data, ignores, outil)
+        infos = {}
+        _, nb = corriger_document(document, data, ignores, get_outil(), infos)
+        statut = "complete" if infos["mode"] in ("local", "public") else "partielle"
+        if infos["mode"] == "public" and tl is not None and not est_public(tl):
+            tl = outil_public()                      # le LanguageTool local a planté -> on garde l'en ligne
+    print(f"CORRECTION TERMINÉE : {nb} correction(s), mode {statut}")
 
     sortie = io.BytesIO()
     document.save(sortie)
@@ -76,5 +80,6 @@ async def creer_fichier(file: UploadFile):
         headers={
             "Content-Disposition": f'attachment; filename="{nom}"',
             "X-Correction": statut,
+            "X-Nb-Corrections": str(nb),
         },
     )

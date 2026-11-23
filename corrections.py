@@ -232,6 +232,22 @@ def get_outil(mode=None):
     return None
 
 
+_outil_public = None
+
+
+def outil_public():
+    """LanguageTool en ligne (pas besoin de Java), créé une seule fois."""
+    global _outil_public
+    if _outil_public is None:
+        import language_tool_python
+        _outil_public = language_tool_python.LanguageToolPublicAPI("fr")
+    return _outil_public
+
+
+def est_public(tl):
+    return type(tl).__name__ == "LanguageToolPublicAPI"
+
+
 def paquets_de_paragraphes(paragraphes, taille_max=15000):
     """Regroupe les paragraphes en paquets de texte (l'API publique limite la taille)."""
     paquet, taille = [], 0
@@ -295,9 +311,10 @@ def passe_languagetool(paragraphes, ignores, tl):
 # Correction complète
 # ---------------------------------------------------------------------------
 
-def corriger_document(document, data=None, ignores=None, tl=None):
+def corriger_document(document, data=None, ignores=None, tl=None, infos=None):
     """Corrige le document (modifié sur place). Renvoie (nombre_de_mots, nombre_de_corrections).
-    tl = outil LanguageTool, ou None pour corriger seulement avec les dictionnaires."""
+    tl = outil LanguageTool, ou None pour corriger seulement avec les dictionnaires.
+    infos (dict, optionnel) reçoit "mode" : "local", "public" ou "dictionnaires"."""
     if data is None:
         data = charger_json("errors.json", {})
     if ignores is None:
@@ -313,12 +330,23 @@ def corriger_document(document, data=None, ignores=None, tl=None):
     if motif:
         nb_corrections += passe_dictionnaire(paragraphes, dictionnaire, motif)
 
+    mode = "dictionnaires"
     if tl is not None:
         try:
             nb_corrections += passe_languagetool(paragraphes, ignores, tl)
-        except Exception as e:     # LanguageTool plante en cours de route -> on garde ce qui est fait
+            mode = "public" if est_public(tl) else "local"
+        except Exception as e:     # LanguageTool plante en cours de route (ex : manque de mémoire)
             print("LanguageTool a échoué :", e)
+            if not est_public(tl):
+                try:               # plan B : LanguageTool en ligne
+                    nb_corrections += passe_languagetool(paragraphes, ignores, outil_public())
+                    mode = "public"
+                    print("-> LanguageTool public utilisé à la place")
+                except Exception as e2:
+                    print("LanguageTool public a échoué aussi :", e2)
 
+    if infos is not None:
+        infos["mode"] = mode
     return cmpt, nb_corrections
 
 
