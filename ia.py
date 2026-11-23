@@ -105,8 +105,9 @@ def remplacer_texte(paragraphe, nouveau):
 
 def corriger_avec_ia(document, ignores):
     """Corrige tout le document avec l'IA. Lève une erreur si l'IA ne répond pas (→ plan B)."""
+    from corrections import tous_les_paragraphes   # corps + tableaux + en-têtes/pieds de page
     paragraphes = []
-    for p in document.paragraphs:
+    for p in tous_les_paragraphes(document):
         texte = "".join(run.text for run in p.runs)
         if texte.strip() and texte == p.text:        # on saute les paragraphes avec des liens (texte hors runs)
             paragraphes.append(p)
