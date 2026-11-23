@@ -24,7 +24,10 @@ from docx import Document
 
 try:
     from wordfreq import zipf_frequency
+    WORDFREQ_OK = True
 except ImportError:                       # wordfreq absent -> on fait sans
+    WORDFREQ_OK = False
+
     def zipf_frequency(mot, langue):
         return 0.0
 
@@ -320,13 +323,154 @@ def passe_languagetool(paragraphes, ignores, tl):
 
 
 # ---------------------------------------------------------------------------
+# Passe 3 : correcteur 100 % Python (sans Java, sans Internet)
+# Utilisé quand LanguageTool est indisponible. Règles prudentes : en cas de doute, on ne touche pas.
+# ---------------------------------------------------------------------------
+
+LETTRES = "A-Za-zÀ-ÖØ-öø-ÿŒœÆæ"
+RE_MOT = re.compile(f"[{LETTRES}]+")
+ALPHABET = "abcdefghijklmnopqrstuvwxyzàâäçéèêëîïôöùûüÿœ"
+
+# je/tu + verbe écrit à la 3e personne : "je fait" -> "je fais"
+VERBES_JE_TU = {
+    "fait": "fais", "doit": "dois", "peut": "peux", "veut": "veux", "sait": "sais", "dit": "dis",
+    "voit": "vois", "met": "mets", "prend": "prends", "vient": "viens", "tient": "tiens",
+    "part": "pars", "sort": "sors", "dort": "dors", "croit": "crois", "écrit": "écris",
+    "lit": "lis", "connait": "connais", "connaît": "connais", "comprend": "comprends",
+    "apprend": "apprends", "attend": "attends", "entend": "entends", "répond": "réponds",
+    "perd": "perds", "vend": "vends", "vit": "vis", "finit": "finis", "choisit": "choisis",
+    "réussit": "réussis", "boit": "bois", "court": "cours", "sent": "sens", "sert": "sers",
+    "reçoit": "reçois", "devient": "deviens", "revient": "reviens", "obtient": "obtiens",
+    "permet": "permets", "promet": "promets", "remet": "remets",
+}
+VERBES_TU = {"a": "as", "va": "vas", "est": "es"}
+VERBES_JE = {"va": "vais"}
+PRONOMS = r"(?:(?:ne|me|te|le|la|les|lui|leur|en|y)\s+|(?:n|m|t|l)['’]\s*)*"
+RE_JE_TU = re.compile(rf"(?<![\w'’])(je|tu)(\s+{PRONOMS})([{LETTRES}]+)(?![\w'’-])", re.IGNORECASE)
+
+# "tu pense" -> "tu penses" : ces mots finissent par "e" mais ne sont pas des verbes
+PAS_DES_VERBES = {"le", "la", "me", "te", "se", "ne", "que", "comme", "même", "une", "elle", "cette",
+                  "notre", "votre", "quelle", "quelque", "entre", "contre", "presque", "encore",
+                  "toute", "chaque", "rare", "simple", "seule", "juste", "libre", "possible"}
+
+# déterminants toujours pluriels : "des faute" -> "des fautes"
+DETERMINANTS_PLURIEL = {"des", "mes", "tes", "ses", "nos", "vos", "ces", "plusieurs", "quelques", "leurs"}
+INVARIABLES = {"le", "la", "les", "un", "une", "de", "du", "des", "en", "et", "ou", "que", "qui", "pour",
+               "par", "sur", "sous", "avec", "sans", "dans", "plus", "moins", "très", "trop", "bien",
+               "mal", "mille", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix",
+               "vingt", "cent", "ce", "ma", "ta", "sa", "mon", "ton", "son", "au", "aux", "ne", "se", "lors"}
+NE_PAS_CORRIGER = {"ores"}
+
+
+def meme_casse(modele, mot):
+    """Garde la majuscule du mot d'origine."""
+    if modele[:1].isupper():
+        return mot[:1].upper() + mot[1:]
+    return mot
+
+
+def suggestion_proche(mot):
+    """Mot très proche (1 lettre de différence) et au moins 300 fois plus fréquent, sinon None."""
+    m = mot.lower()
+    freq = zipf_frequency(m, "fr")
+    if freq >= 3:                                  # mot courant -> on ne touche pas
+        return None
+    if zipf_frequency(m, "en") >= 3:               # mot anglais courant -> on ne touche pas
+        return None
+    candidats = set()
+    for i in range(len(m) + 1):
+        a, b = m[:i], m[i:]
+        if b:
+            candidats.add(a + b[1:])                                   # lettre en trop
+            candidats.update(a + c + b[1:] for c in ALPHABET)          # mauvaise lettre
+        if len(b) > 1:
+            candidats.add(a + b[1] + b[0] + b[2:])                     # lettres inversées
+        candidats.update(a + c + b for c in ALPHABET)                  # lettre oubliée
+    candidats.discard(m)
+    meilleur, meilleure_freq = None, 0
+    for c in candidats:
+        f = zipf_frequency(c, "fr")
+        if f > meilleure_freq:
+            meilleur, meilleure_freq = c, f
+    if meilleur and meilleure_freq >= 3 and meilleure_freq - freq >= 2.5:
+        return meilleur
+    return None
+
+
+def corriger_phrase_python(texte, ignores):
+    """Renvoie la liste des corrections (debut, fin, faute, correction) pour un texte."""
+    corrections = []
+
+    # a) je/tu + verbe
+    for m in RE_JE_TU.finditer(texte):
+        sujet, verbe = m.group(1).lower(), m.group(3)
+        v = verbe.lower()
+        bon = VERBES_JE_TU.get(v) or (VERBES_TU.get(v) if sujet == "tu" else VERBES_JE.get(v))
+        if bon is None and sujet == "tu" and v.endswith("e") and len(v) >= 3 and v not in PAS_DES_VERBES \
+                and zipf_frequency(v + "s", "fr") >= 2:
+            bon = v + "s"                          # tu pense -> tu penses
+        if bon:
+            corrections.append((m.start(3), m.end(3), verbe, meme_casse(verbe, bon)))
+
+    # b) déterminant pluriel + nom au singulier
+    mots = list(RE_MOT.finditer(texte))
+    for avant, mot in zip(mots, mots[1:]):
+        if avant.group().lower() not in DETERMINANTS_PLURIEL:
+            continue
+        if texte[avant.end():mot.start()].strip():     # ponctuation entre les deux -> on ne touche pas
+            continue
+        w = mot.group()
+        if not w.islower() or len(w) < 3 or w[-1] in "sxz" or w in INVARIABLES or w in ignores:
+            continue
+        if zipf_frequency(w, "fr") >= 1 and zipf_frequency(w + "s", "fr") >= 2:
+            corrections.append((mot.start(), mot.end(), w, w + "s"))
+
+    # c) fautes de frappe : porcc -> porc, longtemp -> longtemps
+    if WORDFREQ_OK:
+        debut_phrase = True
+        for m in RE_MOT.finditer(texte):
+            w = m.group()
+            precedent = texte[:m.start()].rstrip()
+            debut_phrase = not precedent or precedent[-1] in ".!?:\n"
+            if len(w) <= 3 or w in ignores or w.lower() in NE_PAS_CORRIGER:
+                continue
+            if any(c.isupper() for c in w[1:]):                 # sigles, DevOps...
+                continue
+            if w[0].isupper() and not debut_phrase:             # nom propre
+                continue
+            bon = suggestion_proche(w)
+            if bon:
+                corrections.append((m.start(), m.end(), w, meme_casse(w, bon)))
+
+    # on garde une seule correction par endroit (pas de chevauchement)
+    corrections.sort()
+    gardees, fin_precedente = [], -1
+    for c in corrections:
+        if c[0] >= fin_precedente:
+            gardees.append(c)
+            fin_precedente = c[1]
+    return gardees
+
+
+def passe_python(paragraphes, ignores):
+    nb = 0
+    for p in paragraphes:
+        texte = texte_runs(p)
+        for debut, fin, faute, correction in reversed(corriger_phrase_python(texte, ignores)):
+            if faute != correction and remplacer_plage(p, debut, fin, correction):
+                nb += 1
+                print(f"{faute} -> {correction} (correcteur Python)")
+    return nb
+
+
+# ---------------------------------------------------------------------------
 # Correction complète
 # ---------------------------------------------------------------------------
 
 def corriger_document(document, data=None, ignores=None, tl=None, infos=None):
     """Corrige le document (modifié sur place). Renvoie (nombre_de_mots, nombre_de_corrections).
     tl = outil LanguageTool, ou None pour corriger seulement avec les dictionnaires.
-    infos (dict, optionnel) reçoit "mode" : "local", "public" ou "dictionnaires"."""
+    infos (dict, optionnel) reçoit "mode" : "local", "public" ou "python"."""
     if data is None:
         data = charger_json("errors.json", {})
     if ignores is None:
@@ -356,6 +500,10 @@ def corriger_document(document, data=None, ignores=None, tl=None, infos=None):
                     print("-> LanguageTool public utilisé à la place")
                 except Exception as e2:
                     print("LanguageTool public a échoué aussi :", e2)
+
+    if mode == "dictionnaires":    # pas de LanguageTool -> correcteur 100 % Python
+        nb_corrections += passe_python(paragraphes, ignores)
+        mode = "python"
 
     if infos is not None:
         infos["mode"] = mode

@@ -18,14 +18,19 @@ tl_essaye = False
 verrou = threading.Lock()
 
 
-def get_outil():
-    """LanguageTool démarré une seule fois ; None s'il est indisponible (-> dictionnaires seuls).
-    Si le démarrage est en cours, on attend qu'il finisse."""
+def get_outil(attente=-1):
+    """LanguageTool démarré une seule fois ; None s'il est indisponible (-> correcteur Python).
+    Si le démarrage est en cours, on attend au plus `attente` secondes (-1 = sans limite)."""
     global tl, tl_essaye
-    with verrou:
+    if not verrou.acquire(timeout=attente):
+        print("LanguageTool encore en démarrage -> correcteur Python pour cette fois")
+        return None
+    try:
         if not tl_essaye:
             tl = demarrer_languagetool()
             tl_essaye = True
+    finally:
+        verrou.release()
     return tl
 
 
@@ -75,8 +80,8 @@ def creer_fichier(file: UploadFile):
         document = Document(io.BytesIO(octets))      # on repart du fichier d'origine
         # plan B : dictionnaire + LanguageTool
         infos = {}
-        _, nb = corriger_document(document, data, ignores, get_outil(), infos)
-        statut = "complete" if infos["mode"] in ("local", "public") else "partielle"
+        _, nb = corriger_document(document, data, ignores, get_outil(attente=30), infos)
+        statut = "complete" if infos["mode"] in ("local", "public") else "python"
         if infos["mode"] == "public" and tl is not None and not est_public(tl):
             tl = outil_public()                      # le LanguageTool local a planté -> on garde l'en ligne
     print(f"CORRECTION TERMINÉE : {nb} correction(s), mode {statut}")

@@ -118,6 +118,7 @@ export default function App() {
                         {resultat.nb ?? "?"} correction(s) — {{
                         ia: "par l'IA",
                         complete: "dictionnaires + LanguageTool",
+                        python: "correcteur Python",
                         partielle: "dictionnaires seulement (LanguageTool indisponible sur le serveur)",
                     }[resultat.statut] ?? resultat.statut}
                     </p>
